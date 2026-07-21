@@ -1,6 +1,6 @@
 from typing import Any
 
-from model_library.base import LLMConfig, TokenRetryParams
+from model_library.base import LLMConfig
 from model_library.base.input import TextInput
 from model_library.registry_utils import get_registry_model
 
@@ -29,12 +29,6 @@ async def get_custom_model(
     )
 
     llm = get_registry_model(model_name, params.llm_config)
-
-    token_retry_params = parameters.get("token_retry_params", None)
-    if token_retry_params:
-        await llm.init_token_retry(
-            token_retry_params=TokenRetryParams.model_validate(token_retry_params),
-        )
 
     async def custom_call(test_input: str, files: dict, context: dict, question_id: str, run_id: str):
         prompt = INSTRUCTIONS_PROMPT.format(question=test_input)
