@@ -83,7 +83,10 @@ async def main():
         "--model",
         type=str,
         default="anthropic/claude-sonnet-4-5-20250929",
-        help="Model to use to generate completions",
+        help=(
+            "Model to use. Bare names (for example glm-5.2) use the custom "
+            "OpenAI-compatible proxy; provider-qualified names use model-library."
+        ),
     )
     parser.add_argument(
         "--question-file",

@@ -2,9 +2,9 @@ from model_library.agent import Agent, AgentConfig, AgentHooks, TurnLimit, TurnR
 from model_library.base import LLM, LLMConfig, RawResponse, TextInput
 from model_library.base.input import InputItem
 from model_library.exceptions import MaxContextWindowExceededError
-from model_library.registry_utils import get_registry_model
 from pydantic import BaseModel
 
+from .model_factory import get_model
 from .tools import (
     VALID_TOOLS,
     EDGARSearch,
@@ -29,7 +29,7 @@ def get_agent(
 ) -> Agent:
     """Helper method to instantiate an agent with the given parameters"""
     if llm is None:
-        llm = get_registry_model(parameters.model_name, parameters.llm_config)
+        llm = get_model(parameters.model_name, parameters.llm_config)
 
     available_tools: dict[str, type[Tool]] = {
         "web_search": TavilyWebSearch,

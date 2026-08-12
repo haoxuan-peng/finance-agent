@@ -2,9 +2,9 @@ from typing import Any
 
 from model_library.base import LLMConfig
 from model_library.base.input import TextInput
-from model_library.registry_utils import get_registry_model
 
 from .get_agent import Parameters, get_agent
+from .model_factory import get_model
 from .prompt import INSTRUCTIONS_PROMPT
 
 
@@ -28,7 +28,7 @@ async def get_custom_model(
         llm_config=create_override_config(**parameters),
     )
 
-    llm = get_registry_model(model_name, params.llm_config)
+    llm = get_model(model_name, params.llm_config)
 
     async def custom_call(test_input: str, files: dict, context: dict, question_id: str, run_id: str):
         prompt = INSTRUCTIONS_PROMPT.format(question=test_input)

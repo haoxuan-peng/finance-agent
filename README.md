@@ -44,11 +44,28 @@ ETC_API_KEY=<etc_api_key>
 # Tool API Keys
 TAVILY_API_KEY=<tavily_api_key>
 SEC_EDGAR_API_KEY=<sec_api_key>  # supports semicolon-separated keys for round-robin rotation, e.g. key1;key2;key3
+
+# OpenAI-compatible model proxy (used when --model is a bare model name)
+AGENT_BASE_URL=https://your-proxy.example.com/v1
+AGENT_API_KEY=<proxy_api_key>
 ```
 
 You can create a Tavily API key [here](https://tavily.com/), and an SEC API key [here](https://sec-api.io/).
 
 The `.env` takes precedence over set environment variables.
+
+When `--model` is a bare model name such as `glm-5.2`, the agent sends model
+requests to `AGENT_BASE_URL` using `AGENT_API_KEY` and the OpenAI-compatible
+Chat Completions protocol. `AGENT_URL` and `AGENT_KEY` are accepted as aliases.
+The base URL may be either an API base such as `https://host/v1` or a full
+`https://host/v1/chat/completions` URL. Provider-qualified names such as
+`openai/gpt-5.2-2025-12-11` continue to use the model-library registry.
+
+For example:
+
+```
+finance-agent --questions "What was Apple's revenue in 2023?" --model glm-5.2
+```
 
 Finally, you should add the "Test Suite IDs" to suites.json. These should have generally been provided to you via email, but you can also find them in the platform, by navigating to the "Test Suites" page, clicking the relevant test suite, and looking on the right sidebar under "Test Suite ID".
 
