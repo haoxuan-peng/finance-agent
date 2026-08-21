@@ -48,6 +48,10 @@ SEC_EDGAR_API_KEY=<sec_api_key>  # supports semicolon-separated keys for round-r
 # OpenAI-compatible model proxy (used when --model is a bare model name)
 AGENT_BASE_URL=https://your-proxy.example.com/v1
 AGENT_API_KEY=<proxy_api_key>
+
+# Optional Qwen-family endpoint. Qwen model names prefer these over AGENT_*.
+QWEN3_API_URL=https://your-qwen-server.example.com/v1
+QWEN3_API_KEY=<qwen_api_key>
 ```
 
 You can create a Tavily API key [here](https://tavily.com/), and an SEC API key [here](https://sec-api.io/).
@@ -60,6 +64,26 @@ Chat Completions protocol. `AGENT_URL` and `AGENT_KEY` are accepted as aliases.
 The base URL may be either an API base such as `https://host/v1` or a full
 `https://host/v1/chat/completions` URL. Provider-qualified names such as
 `openai/gpt-5.2-2025-12-11` continue to use the model-library registry.
+
+Bare Qwen model names such as `qwen3.5-9b` and `qwen3.6-35b-a3b` first use
+`QWEN3_API_URL` and `QWEN3_API_KEY`, falling back to the general `AGENT_*`
+configuration. To route the two models to different servers, use model-specific
+variables (non-alphanumeric model-name characters become underscores):
+
+```
+MODEL_QWEN3_5_9B_BASE_URL=https://qwen-9b.example.com/v1
+MODEL_QWEN3_5_9B_API_KEY=<qwen_9b_api_key>
+MODEL_QWEN3_5_9B_MODEL_ID=<model-id-returned-by-v1-models>
+
+MODEL_QWEN3_6_35B_A3B_BASE_URL=https://qwen-35b.example.com/v1
+MODEL_QWEN3_6_35B_A3B_API_KEY=<qwen_35b_api_key>
+MODEL_QWEN3_6_35B_A3B_MODEL_ID=<model-id-returned-by-v1-models>
+```
+
+The precedence is model-specific variables, then Qwen-family variables, then
+the general `AGENT_*` variables. The optional model-specific `MODEL_ID` changes
+only the model identifier sent to the API, allowing a short CLI model name to
+target a server that advertises a filesystem path or another deployment ID.
 
 For example:
 
