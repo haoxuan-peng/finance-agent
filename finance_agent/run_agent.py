@@ -101,11 +101,29 @@ async def main():
         choices=VALID_TOOLS,
         help="List of tools to make available to the agent",
     )
-    parser.add_argument(
+    turn_limit_group = parser.add_mutually_exclusive_group()
+    turn_limit_group.add_argument(
         "--max-turns",
+        "--max_turns",
+        dest="max_turns",
         type=int,
         default=50,
         help="Maximum number of turns for the agent to take before stopping",
+    )
+    turn_limit_group.add_argument(
+        "--no-max-turns",
+        "--no_max_turns",
+        dest="no_max_turns",
+        action="store_true",
+        help="Disable the turn limit; requires --max-time/--max_time",
+    )
+    parser.add_argument(
+        "--max-time",
+        "--max_time",
+        dest="max_time",
+        type=float,
+        default=None,
+        help="Maximum wall-clock seconds per question, including retry/backoff time",
     )
     parser.add_argument(
         "--parallelism",
@@ -114,6 +132,11 @@ async def main():
         help="Number of parallel requests to make to the model",
     )
     args = parser.parse_args()
+
+    if args.no_max_turns and args.max_time is None:
+        parser.error("--no-max-turns/--no_max_turns requires --max-time/--max_time")
+    if args.max_time is not None and args.max_time <= 0:
+        parser.error("--max-time/--max_time must be greater than 0")
 
     ENV_FILE = Path(".env")
     load_dotenv(override=True, dotenv_path=ENV_FILE)
@@ -128,7 +151,8 @@ async def main():
 
     parameters = Parameters(
         model_name=args.model,
-        max_turns=args.max_turns,
+        max_turns=None if args.no_max_turns else args.max_turns,
+        max_time=args.max_time,
         tools=args.tools,
         llm_config=LLMConfig(
             max_tokens=args.max_tokens,

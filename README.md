@@ -115,6 +115,18 @@ You can also specify a list of questions in a text file, one question per line:
 finance-agent --question-file data/public.txt
 ```
 
+To remove the per-question turn limit while enforcing a one-hour wall-clock
+limit per question (including retry/backoff time), run:
+
+```
+finance-agent --question-file data/public.txt --model glm-5.2 --no_max_turns --max_time 3600
+```
+
+The hyphenated forms `--no-max-turns` and `--max-time` are equivalent.
+`--no_max_turns` requires a positive `--max_time` to prevent an accidentally
+unbounded run. The time limit is checked by the agent between turns; an already
+running model or tool request is not forcibly cancelled mid-request.
+
 The default configuration is the one we used to run the benchmark.
 
 ### List of Models

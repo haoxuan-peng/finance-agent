@@ -1,4 +1,13 @@
-from model_library.agent import Agent, AgentConfig, AgentHooks, TurnLimit, TurnResult, default_before_query, truncate_oldest
+from model_library.agent import (
+    Agent,
+    AgentConfig,
+    AgentHooks,
+    TimeLimit,
+    TurnLimit,
+    TurnResult,
+    default_before_query,
+    truncate_oldest,
+)
 from model_library.base import LLM, LLMConfig, RawResponse, TextInput
 from model_library.base.input import InputItem
 from model_library.exceptions import MaxContextWindowExceededError
@@ -18,7 +27,8 @@ from .tools import (
 
 class Parameters(BaseModel):
     model_name: str
-    max_turns: int = 50
+    max_turns: int | None = 50
+    max_time: float | None = None
     tools: list[str] = VALID_TOOLS
     llm_config: LLMConfig
 
@@ -54,7 +64,8 @@ def get_agent(
     #
     # The loop exits when:
     # - submit_final_result tool returns done=True -> break, no final_error
-    # - max_turns exceeded -> while condition fails, final_error = MaxTurnsExceeded
+    # - max_turns exceeded (when configured) -> final_error = MaxTurnsExceeded
+    # - max_time exceeded (when configured) -> final_error = MaxTimeExceeded
     # - query error re-raised by before_query -> caught by outer except, final_error set
     # - context window exceeded -> before_query truncates history, continues (not a stop)
     # - text-only response (no tool calls) -> continues (overridden below, default would stop)
@@ -79,10 +90,10 @@ def get_agent(
         return default_before_query(history, last_error)
 
     def _should_stop(turn_result: TurnResult) -> bool:
-        """Never stop on text-only responses — only submit_final_result or max_turns can end the loop.
+        """Never stop on text-only responses — only configured limits or final submission end the loop.
 
         The model library default stops on text-only responses (no tool calls), but the finance agent
-        should keep looping until the model calls submit_final_result or we hit max_turns.
+        should keep looping until the model calls submit_final_result or a configured limit is reached.
         """
         return False
 
@@ -91,8 +102,14 @@ def get_agent(
         tools=selected_tools,
         name="finance",
         config=AgentConfig(
-            turn_limit=TurnLimit(max_turns=parameters.max_turns),
-            time_limit=None,
+            turn_limit=TurnLimit(max_turns=parameters.max_turns)
+            if parameters.max_turns is not None
+            else None,
+            time_limit=(
+                TimeLimit(max_seconds=parameters.max_time, include_retries=True)
+                if parameters.max_time is not None
+                else None
+            ),
         ),
         hooks=AgentHooks(
             before_query=_before_query,
