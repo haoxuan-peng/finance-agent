@@ -1,17 +1,19 @@
 import json
 import logging
-import os
 import re
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
+import httpx
 from bs4 import BeautifulSoup
 from model_library.agent import Tool, ToolOutput
 from model_library.base import LLM
 from tavily import AsyncTavilyClient
+from tavily.errors import ForbiddenError, InvalidAPIKeyError, UsageLimitExceededError
 
 from .exceptions import retry_http_errors
-from .key_rotator import KeyRotator, get_rotator
+from .key_rotator import KeyRotator, NoAvailableAPIKeysError, get_rotator
 
 VALID_TOOLS = ["web_search", "retrieve_information", "parse_html_page", "edgar_search"]
 
@@ -32,7 +34,9 @@ class SubmitFinalResult(Tool):
     }
     required: list[str] = ["final_result"]
 
-    async def execute(self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger) -> ToolOutput:
+    async def execute(
+        self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger
+    ) -> ToolOutput:
         try:
             final_result = args["final_result"]
             if not final_result:
@@ -70,14 +74,50 @@ class TavilyWebSearch(Tool):
     }
     required = ["search_query"]
 
-    def __init__(self, tavily_api_key: str | None = None):
-        if not tavily_api_key:
-            tavily_api_key = os.getenv("TAVILY_API_KEY")
-        if not tavily_api_key:
-            raise ValueError("TAVILY_API_KEY is not set")
-        self.client = AsyncTavilyClient(api_key=tavily_api_key)
+    def __init__(
+        self,
+        tavily_api_key: str | None = None,
+        key_rotator: KeyRotator | None = None,
+        client_factory: Callable[[str], Any] = AsyncTavilyClient,
+    ):
+        if key_rotator is not None:
+            self._key_rotator = key_rotator
+        elif tavily_api_key:
+            keys = [key.strip() for key in tavily_api_key.split(";") if key.strip()]
+            self._key_rotator = KeyRotator(keys)
+        else:
+            self._key_rotator = get_rotator("TAVILY_API_KEY")
+        self._client_factory = client_factory
+        self._clients: dict[str, Any] = {}
 
-    @retry_http_errors(429)
+    def _client_for_key(self, key: str) -> Any:
+        if key not in self._clients:
+            self._clients[key] = self._client_factory(key)
+        return self._clients[key]
+
+    @staticmethod
+    def _is_key_failure(exception: Exception) -> bool:
+        if isinstance(
+            exception,
+            (UsageLimitExceededError, InvalidAPIKeyError, ForbiddenError),
+        ):
+            return True
+        if isinstance(exception, httpx.HTTPStatusError):
+            return exception.response.status_code in {401, 403, 429}
+
+        # Keep compatibility with proxy/wrapper versions of the Tavily SDK
+        # that flatten typed quota errors into a generic exception.
+        message = str(exception).lower()
+        return any(
+            marker in message
+            for marker in (
+                "exceeds your plan's set usage limit",
+                "usage limit exceeded",
+                "invalid api key",
+                "invalid_api_key",
+            )
+        )
+
     async def _execute_search(
         self,
         search_query: str,
@@ -91,11 +131,15 @@ class TavilyWebSearch(Tool):
 
         if end_date:
             if not re.match(DATE_REGEX, end_date):
-                raise ValueError(f"Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD.")
+                raise ValueError(
+                    f"Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD."
+                )
 
         if start_date:
             if not re.match(DATE_REGEX, start_date):
-                raise ValueError(f"Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD.")
+                raise ValueError(
+                    f"Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD."
+                )
             if end_date and start_date > end_date:
                 raise ValueError(
                     f"Parameter start_date '{start_date}' was set to a date that is later than end_date '{end_date}'"
@@ -106,17 +150,38 @@ class TavilyWebSearch(Tool):
         if end_date:
             kwargs["end_date"] = end_date
 
-        response = await self.client.search(
-            search_depth="fast",
-            max_results=number_of_results,
-            chunks_per_source=1,
-            query=search_query,
-            **kwargs,
-        )
+        last_key_error: Exception | None = None
+        while self._key_rotator.active_key_count:
+            async with self._key_rotator.acquire() as key:
+                client = self._client_for_key(key)
+                try:
+                    response = await client.search(
+                        search_depth="fast",
+                        max_results=number_of_results,
+                        chunks_per_source=1,
+                        query=search_query,
+                        **kwargs,
+                    )
+                    return response.get("results", [])
+                except Exception as exception:
+                    if not self._is_key_failure(exception):
+                        raise
+                    last_key_error = exception
+                    disabled = await self._key_rotator.disable(key)
+                    if disabled:
+                        logging.getLogger(__name__).warning(
+                            "Disabled an unavailable Tavily API key; %d active key(s) remain",
+                            self._key_rotator.active_key_count,
+                        )
 
-        return response.get("results", [])
+        message = "All configured Tavily API keys are unavailable"
+        if last_key_error:
+            message += f". Last error: {last_key_error}"
+        raise NoAvailableAPIKeysError(message)
 
-    async def execute(self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger) -> ToolOutput:
+    async def execute(
+        self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger
+    ) -> ToolOutput:
         try:
             results = await self._execute_search(**args)
             return ToolOutput(output=json.dumps(results, default=str))
@@ -196,10 +261,14 @@ class EDGARSearch(Tool):
         ciks: list[str] | str | None = None,
     ) -> list[str]:
         if form_types is not None and not isinstance(form_types, list):
-            raise ValueError(f"The parameter form_types must be a list if provided. Was of type {type(form_types)}")
+            raise ValueError(
+                f"The parameter form_types must be a list if provided. Was of type {type(form_types)}"
+            )
 
         if ciks is not None and not isinstance(ciks, list):
-            raise ValueError(f"The parameter ciks must be a list if provided. Was of type {type(ciks)}")
+            raise ValueError(
+                f"The parameter ciks must be a list if provided. Was of type {type(ciks)}"
+            )
 
         date_pattern = r"^\d{4}-\d{2}-\d{2}$"
         if not re.match(date_pattern, start_date):
@@ -237,7 +306,9 @@ class EDGARSearch(Tool):
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.sec_api_url, json=payload, headers=headers) as response:
+                async with session.post(
+                    self.sec_api_url, json=payload, headers=headers
+                ) as response:
                     response.raise_for_status()
                     result = await response.json()
 
@@ -246,7 +317,9 @@ class EDGARSearch(Tool):
 
         return results
 
-    async def execute(self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger) -> ToolOutput:
+    async def execute(
+        self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger
+    ) -> ToolOutput:
         try:
             results = await self._execute_search(**args)
             return ToolOutput(output=json.dumps(results, default=str))
@@ -302,16 +375,19 @@ class ParseHtmlPage(Tool):
 
         return text
 
-    async def _save_tool_output(self, output: str, key: str, state: dict[str, Any]) -> str:
+    async def _save_tool_output(
+        self, output: str, key: str, state: dict[str, Any]
+    ) -> str:
         if not output:
             raise ValueError("HTML output was empty")
 
         tool_result = ""
         if key in state:
-            tool_result = (
-                "WARNING: The key already exists in the data storage. The new result overwrites the old one.\n"
-            )
-        tool_result += f"SUCCESS: The result has been saved to the data storage under the key: {key}." + "\n"
+            tool_result = "WARNING: The key already exists in the data storage. The new result overwrites the old one.\n"
+        tool_result += (
+            f"SUCCESS: The result has been saved to the data storage under the key: {key}."
+            + "\n"
+        )
 
         state[key] = output
 
@@ -326,7 +402,9 @@ class ParseHtmlPage(Tool):
 
         return tool_result
 
-    async def execute(self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger) -> ToolOutput:
+    async def execute(
+        self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger
+    ) -> ToolOutput:
         try:
             url = args["url"]
             key = args["key"]
@@ -417,7 +495,9 @@ class RetrieveInformation(Tool):
 
         mentioned_keys = [key for key in state if key in prompt]
         selected_keys = range_keys or mentioned_keys or [next(reversed(state))]
-        attachments = "\n".join(f"- {key}: " + "{{" + key + "}}" for key in selected_keys)
+        attachments = "\n".join(
+            f"- {key}: " + "{{" + key + "}}" for key in selected_keys
+        )
         repaired_prompt = prompt.rstrip() + "\n\nStored document(s):\n" + attachments
         return repaired_prompt, selected_keys
 
@@ -436,8 +516,14 @@ class RetrieveInformation(Tool):
                 raise ValueError(
                     "ERROR: Each item in input_character_ranges must be an object with 'key', 'start', and 'end' fields."
                 )
-            if "key" not in range_spec or "start" not in range_spec or "end" not in range_spec:
-                raise ValueError("ERROR: Each range specification must have 'key', 'start', and 'end' fields.")
+            if (
+                "key" not in range_spec
+                or "start" not in range_spec
+                or "end" not in range_spec
+            ):
+                raise ValueError(
+                    "ERROR: Each range specification must have 'key', 'start', and 'end' fields."
+                )
             ranges_dict[range_spec["key"]] = (range_spec["start"], range_spec["end"])
 
         keys = re.findall(r"{{([^{}]+)}}", prompt)
@@ -458,7 +544,12 @@ class RetrieveInformation(Tool):
 
         return ranges_dict
 
-    def _format_prompt(self, prompt: str, ranges_dict: dict[str, tuple[int, int]], state: dict[str, Any]) -> str:
+    def _format_prompt(
+        self,
+        prompt: str,
+        ranges_dict: dict[str, tuple[int, int]],
+        state: dict[str, Any],
+    ) -> str:
         """Substitute data storage content into prompt placeholders, applying character ranges."""
         keys = re.findall(r"{{([^{}]+)}}", prompt)
         formatted_data = {}
@@ -480,14 +571,18 @@ class RetrieveInformation(Tool):
                 f"ERROR: The key {str(e)} was not found in the data storage. Available keys are: {', '.join(state.keys())}"
             )
 
-    async def execute(self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger) -> ToolOutput:
+    async def execute(
+        self, args: dict[str, Any], state: dict[str, Any], logger: logging.Logger
+    ) -> ToolOutput:
         try:
             prompt: str = args["prompt"]
             input_character_ranges = args.get("input_character_ranges", [])
             if input_character_ranges is None:
                 input_character_ranges = []
 
-            prompt, attached_keys = self._attach_missing_placeholders(prompt, input_character_ranges, state)
+            prompt, attached_keys = self._attach_missing_placeholders(
+                prompt, input_character_ranges, state
+            )
             if attached_keys:
                 logger.warning(
                     "Retrieve information prompt omitted storage placeholders; automatically attached: %s",

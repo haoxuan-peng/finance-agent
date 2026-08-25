@@ -42,7 +42,7 @@ GOOGLE_API_KEY=<google_api_key>
 ETC_API_KEY=<etc_api_key>
 
 # Tool API Keys
-TAVILY_API_KEY=<tavily_api_key>
+TAVILY_API_KEY=<tavily_api_key>  # supports semicolon-separated failover keys, e.g. key1;key2;key3
 SEC_EDGAR_API_KEY=<sec_api_key>  # supports semicolon-separated keys for round-robin rotation, e.g. key1;key2;key3
 
 # OpenAI-compatible model proxy (used when --model is a bare model name)
@@ -55,6 +55,8 @@ QWEN3_API_KEY=<qwen_api_key>
 ```
 
 You can create a Tavily API key [here](https://tavily.com/), and an SEC API key [here](https://sec-api.io/).
+
+When multiple Tavily keys are configured, searches use the active keys in round-robin order. A key that returns an exhausted-plan, invalid-key, forbidden, or HTTP 401/403/429 error is disabled for the rest of the current process, and the same search immediately tries the next active key. Restarting the process resets the disabled-key state.
 
 The `.env` takes precedence over set environment variables.
 
