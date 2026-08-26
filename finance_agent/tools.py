@@ -5,12 +5,11 @@ from collections.abc import Callable
 from typing import Any
 
 import aiohttp
-import httpx
 from bs4 import BeautifulSoup
 from model_library.agent import Tool, ToolOutput
 from model_library.base import LLM
 from tavily import AsyncTavilyClient
-from tavily.errors import ForbiddenError, InvalidAPIKeyError, UsageLimitExceededError
+from tavily.errors import InvalidAPIKeyError, UsageLimitExceededError
 
 from .exceptions import retry_http_errors
 from .key_rotator import KeyRotator, NoAvailableAPIKeysError, get_rotator
@@ -84,9 +83,9 @@ class TavilyWebSearch(Tool):
             self._key_rotator = key_rotator
         elif tavily_api_key:
             keys = [key.strip() for key in tavily_api_key.split(";") if key.strip()]
-            self._key_rotator = KeyRotator(keys)
+            self._key_rotator = KeyRotator(keys, strategy="sticky")
         else:
-            self._key_rotator = get_rotator("TAVILY_API_KEY")
+            self._key_rotator = get_rotator("TAVILY_API_KEY", strategy="sticky")
         self._client_factory = client_factory
         self._clients: dict[str, Any] = {}
 
@@ -99,14 +98,14 @@ class TavilyWebSearch(Tool):
     def _is_key_failure(exception: Exception) -> bool:
         if isinstance(
             exception,
-            (UsageLimitExceededError, InvalidAPIKeyError, ForbiddenError),
+            (UsageLimitExceededError, InvalidAPIKeyError),
         ):
             return True
-        if isinstance(exception, httpx.HTTPStatusError):
-            return exception.response.status_code in {401, 403, 429}
 
         # Keep compatibility with proxy/wrapper versions of the Tavily SDK
-        # that flatten typed quota errors into a generic exception.
+        # that flatten explicit quota/key errors into a generic exception.
+        # Generic HTTP 429/403 responses are deliberately not enough to rotate:
+        # they can be temporary rate limits or IP-level restrictions.
         message = str(exception).lower()
         return any(
             marker in message
@@ -244,9 +243,9 @@ class EDGARSearch(Tool):
         if key_rotator is not None:
             self._key_rotator = key_rotator
         elif sec_api_key:
-            self._key_rotator = KeyRotator([sec_api_key])
+            self._key_rotator = KeyRotator([sec_api_key], strategy="round_robin")
         else:
-            self._key_rotator = get_rotator("SEC_EDGAR_API_KEY")
+            self._key_rotator = get_rotator("SEC_EDGAR_API_KEY", strategy="round_robin")
         self.sec_api_url: str = "https://api.sec-api.io/full-text-search"
 
     @retry_http_errors(429, 503)

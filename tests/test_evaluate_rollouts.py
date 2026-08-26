@@ -1,8 +1,11 @@
+import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from finance_agent.evaluate_rollouts import (
+    _add_score_totals,
     _aggregate,
     _extract_json_object,
     _normalize_rubrics,
@@ -22,6 +25,56 @@ class EvaluateRolloutsTests(unittest.TestCase):
             "What does Block's guidance look like?", dataset["q044"]["question"]
         )
         self.assertGreater(len(dataset["q044"]["rubrics"]), 0)
+
+    def test_loads_synthetic_csv_fields_and_weighted_points(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dataset_path = Path(directory) / "synthetic.csv"
+            with dataset_path.open("w", encoding="utf-8", newline="") as file:
+                writer = csv.DictWriter(
+                    file,
+                    fieldnames=["Question", "Answer", "Question Type", "Rubric"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "Question": "Who is the CFO?",
+                        "Answer": "Example Person",
+                        "Question Type": "Company Person",
+                        "Rubric": json.dumps(
+                            [
+                                {"criteria": "Names the CFO", "points": 2},
+                                {"criteria": "Gives the date", "points": 0.5},
+                            ]
+                        ),
+                    }
+                )
+
+            dataset = load_dataset(dataset_path)
+
+        self.assertEqual(dataset["q001"]["question"], "Who is the CFO?")
+        self.assertEqual(dataset["q001"]["reference_answer"], "Example Person")
+        self.assertEqual(dataset["q001"]["question_type"], "Company Person")
+        self.assertEqual(
+            [rubric["points"] for rubric in dataset["q001"]["rubrics"]],
+            [2.0, 0.5],
+        )
+
+    def test_score_totals_use_rubric_points(self):
+        item = {
+            "judgement": {
+                "rubric_scores": [
+                    {"score": 1, "points": 2.0, "must_have": True},
+                    {"score": 0, "points": 0.5, "must_have": False},
+                ]
+            }
+        }
+
+        _add_score_totals(item)
+
+        self.assertEqual(item["score"]["earned"], 2.0)
+        self.assertEqual(item["score"]["possible"], 2.5)
+        self.assertEqual(item["score"]["percent"], 80.0)
+        self.assertEqual(item["score"]["rubrics_passed"], 1)
 
     def test_discovers_latest_duplicate_and_ignores_turn_results(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -90,6 +143,8 @@ class EvaluateRolloutsTests(unittest.TestCase):
                 "earned": 1,
                 "possible": 1,
                 "percent": 100,
+                "rubrics_passed": 1,
+                "rubrics_total": 1,
                 "must_have_earned": 1,
                 "must_have_possible": 1,
                 "must_have_percent": 100,
@@ -108,6 +163,7 @@ class EvaluateRolloutsTests(unittest.TestCase):
                         "rubric_id": "1",
                         "rubric_text": "Criterion",
                         "must_have": True,
+                        "points": 1.0,
                         "score": 1,
                         "explanation": "Present",
                         "evidence": "Answer",

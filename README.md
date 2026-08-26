@@ -56,7 +56,14 @@ QWEN3_API_KEY=<qwen_api_key>
 
 You can create a Tavily API key [here](https://tavily.com/), and an SEC API key [here](https://sec-api.io/).
 
-When multiple Tavily keys are configured, searches use the active keys in round-robin order. A key that returns an exhausted-plan, invalid-key, forbidden, or HTTP 401/403/429 error is disabled for the rest of the current process, and the same search immediately tries the next active key. Restarting the process resets the disabled-key state.
+When multiple Tavily keys are configured, every concurrent search in one
+`finance-agent` process stays on the first active key. The next key is enabled
+only after the current key returns an explicit exhausted-plan or invalid-key
+error and all in-flight requests using it have finished. Generic HTTP 403/429
+responses do not rotate keys because they may represent temporary or IP-level
+limits. Restarting the process resets the disabled-key state. This coordination
+is process-local; independently launched processes or containers do not share
+key state.
 
 The `.env` takes precedence over set environment variables.
 
@@ -136,6 +143,18 @@ python -m finance_agent.evaluate_rollouts \
   --logs-path logs/finance/<rollout-model-directory> \
   --dataset data/FF_test.jsonl \
   --parallelism 4
+```
+
+CSV question sets are also accepted directly. The evaluator recognizes
+`Question`, `Answer`, `Question Type`, and `Rubric` columns; `Rubric` must be a
+JSON array such as `[{"criteria": "States the correct CFO", "points": 2}]`.
+The optional reference answer is provided to the judge as ground-truth context,
+and rubric `points` are used as scoring weights:
+
+```bash
+python -m finance_agent.evaluate_rollouts \
+  --logs-path logs/finance/<rollout-model-directory> \
+  --dataset /path/to/synthetic_candidates.csv
 ```
 
 The evaluator recursively finds each `qNNN/result.json`, keeps the newest result
