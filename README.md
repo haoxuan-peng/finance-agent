@@ -124,6 +124,29 @@ limit per question (including retry/backoff time), run:
 finance-agent --question-file data/public.txt --model glm-5.2 --no_max_turns --max_time 3600
 ```
 
+## Evaluate rollout trajectories
+
+Completed rollouts can be graded against the rubrics in `data/FF_test.jsonl`
+with the OpenAI-compatible judge configured by `JUDGE_MODEL` in `.env`.
+`JUDGE_API_URL` and `JUDGE_API_KEY` are optional; when omitted, the evaluator
+uses `AGENT_BASE_URL` and `AGENT_API_KEY`:
+
+```bash
+python -m finance_agent.evaluate_rollouts \
+  --logs-path logs/finance/<rollout-model-directory> \
+  --dataset data/FF_test.jsonl \
+  --parallelism 4
+```
+
+The evaluator recursively finds each `qNNN/result.json`, keeps the newest result
+when a model has duplicate attempts for the same question, checkpoints each
+judgement for resume, and writes `scores.json` plus a self-contained
+`report.html` under `evaluations/`. Use multiple paths after `--logs-path` to
+compare rollout models in one report, or `--question-ids q001 q002` for a small
+test run. Re-run with `--no-resume` to force fresh judgements. After reinstalling
+the project (`uv sync` or `pip install -e .`), the shorter
+`finance-agent-evaluate` command is also available.
+
 The hyphenated forms `--no-max-turns` and `--max-time` are equivalent.
 `--no_max_turns` requires a positive `--max_time` to prevent an accidentally
 unbounded run. The time limit is checked by the agent between turns; an already
