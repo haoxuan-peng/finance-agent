@@ -166,6 +166,39 @@ test run. Re-run with `--no-resume` to force fresh judgements. After reinstallin
 the project (`uv sync` or `pip install -e .`), the shorter
 `finance-agent-evaluate` command is also available.
 
+### Select high-scoring trajectories
+
+Filter an existing `scores.json` by the **whole-question** `score.percent`
+(rubric-points-weighted percentage). No judge/API calls or dataset file are
+needed. The threshold is inclusive: the default includes scores **>= 70%**,
+without rounding or an additional must-have/rollout-success filter. Evaluation
+errors and invalid scores are excluded and counted separately.
+
+```bash
+python -m finance_agent.select_rollouts \
+  --eval-path evaluations/<evaluation-directory> \
+  --min-score 70 \
+  --output-dir selected_rollouts/ge70 \
+  --copy-trajectories
+```
+
+`--eval-path` accepts either an evaluation directory or its `scores.json`.
+The output includes `selected.json` (full selected evaluation records and
+counts), `selected.csv` (scores and paths), and `selected_paths.txt` (original
+`result.json` paths). With `--copy-trajectories`, the entire selected `qNNN`
+folders are also copied under `trajectories/<model>/<run>__<source-hash>/qNNN/`,
+including `turns/` and `agent.log`. Different models/runs stay separate. Omit
+`--copy-trajectories` to create lists only, even without local trajectory files.
+
+Run from the original project root, or use `--project-root /path/to/finance-agent`
+to resolve relative `source_result` paths. Absolute paths are used as recorded;
+relocated logs must be restored/remapped before copying. Copy mode checks all
+selected source files before writing and stops if any are missing. Original
+logs are never modified; use a new/empty output directory for each export.
+Without `--output-dir`, output goes to `<evaluation-directory>/selected_ge_70`
+(or the requested threshold). After reinstalling the project, the equivalent
+`finance-agent-select` command is available.
+
 The hyphenated forms `--no-max-turns` and `--max-time` are equivalent.
 `--no_max_turns` requires a positive `--max_time` to prevent an accidentally
 unbounded run. The time limit is checked by the agent between turns; an already
