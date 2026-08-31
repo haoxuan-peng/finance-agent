@@ -199,6 +199,55 @@ Without `--output-dir`, output goes to `<evaluation-directory>/selected_ge_70`
 (or the requested threshold). After reinstalling the project, the equivalent
 `finance-agent-select` command is available.
 
+### Export long, low-scoring questions for retesting
+
+Use the same original CSV/JSONL dataset used for evaluation to export only the
+questions whose evaluated trajectory has **turns > 40 AND score < 10%**. These
+are strict boundaries: exactly 40 turns or exactly 10% does not qualify. The
+script uses `trajectory.total_turns` and the whole-question `score.percent`
+from `scores.json`, without needing the logs or calling any APIs.
+
+```bash
+python -m finance_agent.select_hard_questions \
+  --eval-path evaluations/<evaluation-directory>/scores.json \
+  --dataset /path/to/test1500.csv \
+  --num-questions 100 \
+  --output-dir selected_questions/hard100
+```
+
+`--num-questions` (alias `--limit`) caps the number of distinct original question
+IDs, not trajectories; omit it to export all matches. Any one qualifying model
+attempt is sufficient. Both thresholds must hold for that same attempt. The
+script deduplicates question IDs and prioritizes lowest score, then highest
+turn count, with deterministic ID/model tie-breaks. If fewer questions qualify,
+all qualifying questions are exported with a warning. Evaluation errors and
+invalid metrics are excluded. Change the strict bounds with `--min-turns` and
+`--max-score` if needed.
+
+Exactly two files are generated in a new/empty output directory:
+
+- `questions.txt`: one question per line, with no IDs, rubrics, or headings.
+- `questions.csv`: the same questions in the same order, with original reference
+  answers, question types, and complete rubric JSON (including points and
+  must-have flags). Extra columns record the source question ID, model, turns,
+  and score. No judge verdict is substituted for the original rubric.
+
+Multiline questions are flattened consistently in both files. The script
+checks the original question text against the evaluation record to catch a
+wrong dataset or row order. Use the two outputs **together** for a new run:
+
+```bash
+finance-agent --question-file selected_questions/hard100/questions.txt --model glm-5.2
+python -m finance_agent.evaluate_rollouts \
+  --logs-path logs/finance/<model>/<new-run> \
+  --dataset selected_questions/hard100/questions.csv
+```
+
+New runs start numbering at `q001`; exported CSV row 1 therefore matches new
+`q001`, row 2 matches `q002`, etc. Do not evaluate these subset rollouts against
+the original full dataset, and do not mix older runs into `--logs-path`.
+After reinstalling, `finance-agent-select-questions` is an equivalent command.
+
 The hyphenated forms `--no-max-turns` and `--max-time` are equivalent.
 `--no_max_turns` requires a positive `--max_time` to prevent an accidentally
 unbounded run. The time limit is checked by the agent between turns; an already

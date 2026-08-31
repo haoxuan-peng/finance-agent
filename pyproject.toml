@@ -40,6 +40,7 @@ dev = [
 finance-agent = "finance_agent.run_agent:main_sync"
 finance-agent-evaluate = "finance_agent.evaluate_rollouts:main_sync"
 finance-agent-select = "finance_agent.select_rollouts:main_sync"
+finance-agent-select-questions = "finance_agent.select_hard_questions:main_sync"
 
 [tool.basedpyright]
 exclude = [
