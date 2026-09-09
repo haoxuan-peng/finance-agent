@@ -166,6 +166,12 @@ test run. Re-run with `--no-resume` to force fresh judgements. After reinstallin
 the project (`uv sync` or `pip install -e .`), the shorter
 `finance-agent-evaluate` command is also available.
 
+The HTML report includes a 10-point score-distribution histogram, total and
+per-model rollout completion (`trajectory.success`), average turns, and average
+calls for every recorded tool. Score buckets include graded questions only;
+turn and tool averages use all available trajectories, with an uncalled tool
+counting as zero for that trajectory.
+
 ### Select high-scoring trajectories
 
 Filter an existing `scores.json` by the **whole-question** `score.percent`

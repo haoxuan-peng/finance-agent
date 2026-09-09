@@ -132,6 +132,55 @@ class EvaluateRolloutsTests(unittest.TestCase):
         )
         self.assertEqual([item["score"] for item in judgement["rubric_scores"]], [1, 0])
 
+    def test_aggregate_includes_completion_turns_tools_and_score_buckets(self):
+        def item(percent, success, turns, tool_usage):
+            return {
+                "status": "ok",
+                "score": {
+                    "earned": percent,
+                    "possible": 100,
+                    "percent": percent,
+                    "rubrics_passed": 1,
+                    "rubrics_total": 1,
+                    "must_have_earned": 0,
+                    "must_have_possible": 0,
+                    "must_have_percent": 0,
+                },
+                "trajectory": {
+                    "success": success,
+                    "total_turns": turns,
+                    "tool_usage": tool_usage,
+                },
+            }
+
+        items = [
+            item(0, True, 10, {"web_search": 2}),
+            item(10, False, 20, {"parse_html_page": 4}),
+            item(99.9, True, 30, {"web_search": 1}),
+            item(100, False, 40, {}),
+        ]
+        items.append(
+            {
+                "status": "error",
+                "trajectory": {"success": False, "total_turns": 50, "tool_usage": {}},
+            }
+        )
+
+        summary = _aggregate(items)
+
+        self.assertEqual(summary["agent_successes"], 2)
+        self.assertEqual(summary["questions"], 5)
+        self.assertEqual(summary["agent_completion_rate_percent"], 40)
+        self.assertEqual(summary["trajectory_count"], 5)
+        self.assertEqual(summary["average_turns"], 30)
+        self.assertEqual(
+            summary["tool_call_totals"], {"parse_html_page": 4.0, "web_search": 3.0}
+        )
+        self.assertEqual(
+            summary["average_tool_calls"], {"parse_html_page": 0.8, "web_search": 0.6}
+        )
+        self.assertEqual(summary["score_distribution"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 2])
+
     def test_renders_self_contained_report(self):
         item = {
             "status": "ok",
@@ -154,6 +203,7 @@ class EvaluateRolloutsTests(unittest.TestCase):
                 "stop_reason": "done_tool",
                 "total_turns": 2,
                 "tool_calls_count": 1,
+                "tool_usage": {"web_search": 1},
                 "input_tokens": 100,
                 "output_tokens": 20,
             },
@@ -183,6 +233,11 @@ class EvaluateRolloutsTests(unittest.TestCase):
         self.assertIn("Finance Agent Rubric Evaluation", report)
         self.assertIn("model-a", report)
         self.assertIn("100.0%", report)
+        self.assertIn("Score distribution", report)
+        self.assertIn("90–100: 1", report)
+        self.assertIn("1/1 (100.0%)", report)
+        self.assertIn("average turns", report)
+        self.assertIn("web_search", report)
 
 
 if __name__ == "__main__":

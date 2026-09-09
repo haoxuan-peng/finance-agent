@@ -536,19 +536,64 @@ async def _grade_one(
 
 def _aggregate(items: list[dict[str, Any]]) -> dict[str, Any]:
     completed = [item for item in items if item.get("status") == "ok"]
+    trajectory_items = [
+        item for item in items if isinstance(item.get("trajectory"), dict)
+    ]
     total_earned = sum(item["score"]["earned"] for item in completed)
     total_possible = sum(item["score"]["possible"] for item in completed)
     rubrics_passed = sum(item["score"]["rubrics_passed"] for item in completed)
     rubrics_total = sum(item["score"]["rubrics_total"] for item in completed)
     must_earned = sum(item["score"]["must_have_earned"] for item in completed)
     must_possible = sum(item["score"]["must_have_possible"] for item in completed)
+    agent_successes = sum(
+        bool(item["trajectory"].get("success")) for item in trajectory_items
+    )
+    tool_call_totals: dict[str, float] = defaultdict(float)
+    for item in trajectory_items:
+        usage = item["trajectory"].get("tool_usage")
+        if not isinstance(usage, dict):
+            continue
+        for tool_name, count in usage.items():
+            if (
+                isinstance(tool_name, str)
+                and not isinstance(count, bool)
+                and isinstance(count, (int, float))
+                and math.isfinite(count)
+                and count >= 0
+            ):
+                tool_call_totals[tool_name] += float(count)
+    score_distribution = [0] * 10
+    for item in completed:
+        percent = float(item["score"]["percent"])
+        bucket = min(int(max(percent, 0.0) // 10), 9)
+        score_distribution[bucket] += 1
+    trajectory_count = len(trajectory_items)
+    question_count = len(items)
     return {
-        "questions": len(items),
+        "questions": question_count,
         "graded": len(completed),
-        "judge_errors": len(items) - len(completed),
-        "agent_successes": sum(
-            bool(item.get("trajectory", {}).get("success")) for item in items
+        "judge_errors": question_count - len(completed),
+        "trajectory_count": trajectory_count,
+        "agent_successes": agent_successes,
+        "agent_completion_rate_percent": (
+            100 * agent_successes / question_count if question_count else 0.0
         ),
+        "average_turns": (
+            mean(
+                float(item["trajectory"].get("total_turns") or 0)
+                for item in trajectory_items
+            )
+            if trajectory_items
+            else 0.0
+        ),
+        "tool_call_totals": dict(sorted(tool_call_totals.items())),
+        "average_tool_calls": {
+            name: total / trajectory_count
+            for name, total in sorted(tool_call_totals.items())
+        }
+        if trajectory_count
+        else {},
+        "score_distribution": score_distribution,
         "rubric_earned": total_earned,
         "rubric_possible": total_possible,
         "rubrics_passed": rubrics_passed,
@@ -589,9 +634,63 @@ def render_html_report(payload: dict[str, Any]) -> str:
             f"<td>{summary['rubrics_passed']}/{summary['rubrics_total']}</td>"
             f"<td>{summary['micro_score_percent']:.1f}%</td>"
             f"<td>{summary['must_have_percent']:.1f}%</td>"
-            f"<td>{summary['agent_successes']}/{summary['questions']}</td>"
+            f"<td>{summary['agent_successes']}/{summary['questions']} "
+            f"({summary['agent_completion_rate_percent']:.1f}%)</td>"
+            f"<td>{summary['average_turns']:.1f}</td>"
             "</tr>"
         )
+
+    distribution_labels = [
+        "0–<10",
+        "10–<20",
+        "20–<30",
+        "30–<40",
+        "40–<50",
+        "50–<60",
+        "60–<70",
+        "70–<80",
+        "80–<90",
+        "90–100",
+    ]
+    distribution = overall["score_distribution"]
+    max_bucket = max(distribution, default=0)
+    chart_bars = []
+    for label, count in zip(distribution_labels, distribution, strict=True):
+        height = 0 if max_bucket == 0 else 180 * count / max_bucket
+        chart_bars.append(
+            '<div class="bucket">'
+            f'<div class="bar-area"><span class="bar-count">{count}</span>'
+            f'<div class="bar" style="height:{height:.1f}px" title="{label}: {count}"></div></div>'
+            f'<div class="bar-label">{label}</div></div>'
+        )
+
+    all_tools = sorted(
+        {
+            tool_name
+            for summary in [
+                overall,
+                *(_aggregate(values) for values in by_model.values()),
+            ]
+            for tool_name in summary["average_tool_calls"]
+        }
+    )
+    tool_headers = "".join(f"<th>{html.escape(name)}</th>" for name in all_tools)
+    tool_rows = []
+    tool_summaries = [("Overall", overall)] + [
+        (model, _aggregate(model_items))
+        for model, model_items in sorted(by_model.items())
+    ]
+    for label, summary in tool_summaries:
+        averages = summary["average_tool_calls"]
+        tool_rows.append(
+            "<tr>"
+            f"<td>{html.escape(label)}</td>"
+            f"<td>{summary['trajectory_count']}</td>"
+            + "".join(f"<td>{averages.get(name, 0.0):.2f}</td>" for name in all_tools)
+            + "</tr>"
+        )
+    if not all_tools:
+        tool_rows = ['<tr><td colspan="2">No tool usage recorded.</td></tr>']
 
     question_rows = []
     for item in items:
@@ -668,6 +767,7 @@ main {{ max-width:1500px; margin:auto; padding:32px }} h1 {{ margin:0 0 4px; fon
 table {{ border-collapse:collapse; width:100% }} th,td {{ border-bottom:1px solid var(--line); padding:10px; text-align:left; vertical-align:top }} th {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em }}
 input {{ width:100%; max-width:520px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:12px }} details {{ margin-top:8px }} summary {{ color:var(--accent); cursor:pointer }} pre {{ white-space:pre-wrap; max-height:420px; overflow:auto; background:#f8fafc; padding:12px; border-radius:8px }}
 .rubrics {{ margin-top:10px; min-width:1000px }} .pass {{ color:var(--good); font-weight:700 }} .fail,.error {{ color:var(--bad) }} .answer {{ margin-top:12px }} .question-type {{ color:var(--muted); font-size:12px; margin-bottom:3px }}
+.chart {{ display:grid; grid-template-columns:repeat(10,minmax(54px,1fr)); gap:10px; min-width:700px; height:235px; align-items:end; padding-top:12px }} .bucket {{ min-width:0; text-align:center }} .bar-area {{ height:200px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center }} .bar-count {{ font-weight:700; margin-bottom:5px }} .bar {{ width:min(48px,80%); min-height:0; border-radius:7px 7px 0 0; background:linear-gradient(180deg,#5475e5,var(--accent)) }} .bar-label {{ border-top:1px solid var(--line); padding-top:7px; color:var(--muted); font-size:12px; white-space:nowrap }} .note {{ color:var(--muted); margin-top:-8px }}
 </style></head><body><main>
 <h1>Finance Agent Rubric Evaluation</h1><div class="meta">Judge: {judge_model} · Generated: {generated}</div>
 <section class="cards">
@@ -675,10 +775,13 @@ input {{ width:100%; max-width:520px; padding:10px 12px; border:1px solid var(--
 <div class="card"><b>{overall["micro_score_percent"]:.1f}%</b><span>micro rubric score</span></div>
 <div class="card"><b>{overall["macro_score_percent"]:.1f}%</b><span>macro question score</span></div>
 <div class="card"><b>{overall["must_have_percent"]:.1f}%</b><span>must-have score</span></div>
-<div class="card"><b>{overall["agent_successes"]}/{overall["questions"]}</b><span>agent successful rollouts</span></div>
+<div class="card"><b>{overall["agent_successes"]}/{overall["questions"]} ({overall["agent_completion_rate_percent"]:.1f}%)</b><span>rollout completion rate</span></div>
+<div class="card"><b>{overall["average_turns"]:.1f}</b><span>average turns ({overall["trajectory_count"]} trajectories)</span></div>
 <div class="card"><b>{overall["judge_errors"]}</b><span>judge errors</span></div>
 </section>
-<section class="panel"><h2>Models</h2><table><thead><tr><th>Model</th><th>Graded</th><th>Points</th><th>Rubrics passed</th><th>Micro</th><th>Must-have</th><th>Agent success</th></tr></thead><tbody>{"".join(model_rows)}</tbody></table></section>
+<section class="panel"><h2>Score distribution</h2><p class="note">Graded questions only. Buckets are left-inclusive and right-exclusive, except 90–100 includes 100.</p><div class="chart">{"".join(chart_bars)}</div></section>
+<section class="panel"><h2>Average tool calls per trajectory</h2><p class="note">The denominator is all trajectories shown in the row; a tool not called by a trajectory counts as zero.</p><table><thead><tr><th>Scope</th><th>Trajectories</th>{tool_headers}</tr></thead><tbody>{"".join(tool_rows)}</tbody></table></section>
+<section class="panel"><h2>Models</h2><table><thead><tr><th>Model</th><th>Graded</th><th>Points</th><th>Rubrics passed</th><th>Micro</th><th>Must-have</th><th>Completion</th><th>Avg turns</th></tr></thead><tbody>{"".join(model_rows)}</tbody></table></section>
 <section class="panel"><h2>Questions</h2><input id="filter" placeholder="Filter by model, question ID, or text…"><table id="questions"><thead><tr><th>Model</th><th>ID</th><th>Question</th><th>Score</th><th>Must-have</th><th>Rollout</th><th>Turns / tools</th><th>Input / output tokens</th></tr></thead><tbody>{"".join(question_rows)}</tbody></table></section>
 </main><script>const f=document.getElementById('filter');f.addEventListener('input',()=>{{const q=f.value.toLowerCase();document.querySelectorAll('#questions tbody tr').forEach(r=>r.hidden=!(r.dataset.search||'').toLowerCase().includes(q));}});</script></body></html>"""
 
