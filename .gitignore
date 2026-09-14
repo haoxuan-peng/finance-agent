@@ -5,3 +5,7 @@ __pycache__/
 .env
 /data
 /evaluations
+.DS_STORE
+/tests
+/ruff_cache
+keys.txt
