@@ -124,6 +124,32 @@ You can also specify a list of questions in a text file, one question per line:
 finance-agent --question-file data/public.txt
 ```
 
+To retry unfinished questions **without changing their original question IDs**:
+
+```bash
+python -m finance_agent.prepare_remaining \
+  --question-file data/public.txt \
+  --logs-path logs/finance/glm-5.3/<original-run> \
+  --output-file data/remaining.txt
+finance-agent --question-file data/remaining.txt --model glm-5.3
+```
+
+The retry TXT contains `qNNN<TAB>question` records. The runner automatically
+recognizes this format and logs the original IDs (`q116` stays `q116`, not
+`q001`), while ordinary one-question-per-line files keep sequential numbering.
+The ID is not sent as part of the question prompt. Mixed formats and duplicate
+IDs are rejected; IDs above `q999` are supported. The generated file can itself
+be used as input to `prepare_remaining` for further retries (choose a different
+output filename). A question is treated as completed if any selected run has
+no final error and a nonempty final answer; per-turn results are ignored.
+
+Pass only log runs from the **same question dataset with the same original
+IDs**; do not include older runs that reindexed a subset or used another dataset.
+Multiple run directories may follow `--logs-path`. Evaluate ID-preserving retry
+logs against the **original full CSV/JSONL**, not a newly reindexed subset CSV.
+Supply both the original and retry log directories to the evaluator to combine
+them; its existing newest-attempt-per-model/question behavior is unchanged.
+
 To remove the per-question turn limit while enforcing a one-hour wall-clock
 limit per question (including retry/backoff time), run:
 

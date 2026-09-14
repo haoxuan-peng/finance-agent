@@ -12,6 +12,7 @@ from tqdm.asyncio import tqdm
 
 from .get_agent import Parameters, get_agent
 from .prompt import INSTRUCTIONS_PROMPT
+from .question_files import load_question_file, validate_question_ids
 from .tools import VALID_TOOLS
 
 
@@ -19,29 +20,35 @@ async def run_tests_parallel(
     questions: list[str],
     max_concurrent: int,
     parameters: Parameters,
+    question_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run multiple questions in parallel using the agent"""
+    if question_ids is None:
+        question_ids = [f"q{i:03d}" for i in range(1, len(questions) + 1)]
+    if len(question_ids) != len(questions):
+        raise ValueError("questions and question_ids must have the same length")
+    validate_question_ids(question_ids)
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def process_question(question: str, question_index: int):
+    async def process_question(question: str, question_id: str):
         async with semaphore:
             agent = get_agent(parameters)
             prompt = INSTRUCTIONS_PROMPT.format(question=question)
-            result = await agent.run([TextInput(text=prompt)], question_id=f"q{question_index:03d}")
+            result = await agent.run([TextInput(text=prompt)], question_id=question_id)
             return result
 
-    tasks = [process_question(question, i + 1) for i, question in enumerate(questions)]
+    tasks = [process_question(question, qid) for question, qid in zip(questions, question_ids)]
 
     results: list[AgentResult] = await tqdm.gather(*tasks, desc="Processing questions")
 
     formatted_results = []
-    for question, result in zip(questions, results):
+    for question, qid, result in zip(questions, question_ids, results):
         if isinstance(result, Exception):
-            formatted_results.append({"question": question, "success": False, "error": str(result)})
+            formatted_results.append({"question_id": qid, "question": question, "success": False, "error": str(result)})
             print(f"\nFAIL Question failed: {question}\n   Error: {result}\n")
         else:
             formatted_results.append(
-                {"question": question, "success": result.success, "result": result.model_dump(mode="json")}
+                {"question_id": qid, "question": question, "success": result.success, "result": result.model_dump(mode="json")}
             )
             if not result.success and result.final_error:
                 print(
@@ -91,7 +98,7 @@ async def main():
     parser.add_argument(
         "--question-file",
         type=str,
-        help="Path to file containing questions (one per line)",
+        help="Question TXT: one question per line, or qNNN<TAB>question to preserve original IDs",
     )
     parser.add_argument(
         "--tools",
@@ -142,10 +149,13 @@ async def main():
     load_dotenv(override=True, dotenv_path=ENV_FILE)
 
     if args.question_file:
-        with open(args.question_file) as f:
-            questions = [line.strip() for line in f if line.strip()]
+        try:
+            questions, question_ids = load_question_file(Path(args.question_file))
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     elif args.questions:
         questions = args.questions
+        question_ids = None
     else:
         raise Exception("No questions provided. One of --question-file or --questions must be used.")
 
@@ -164,6 +174,7 @@ async def main():
         questions=questions,
         max_concurrent=args.parallelism,
         parameters=parameters,
+        question_ids=question_ids,
     )
 
 

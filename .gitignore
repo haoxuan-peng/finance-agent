@@ -6,6 +6,7 @@ __pycache__/
 /data
 /evaluations
 .DS_STORE
-/tests
+/tests/*
+!/tests/test_question_files.py
 /ruff_cache
 keys.txt
