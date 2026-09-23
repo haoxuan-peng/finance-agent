@@ -106,6 +106,77 @@ class QuestionFileTests(unittest.TestCase):
             self.assertEqual(summary["remaining_ids"], ["q116"])
             self.assertEqual(output.read_text(), "q116\tQuestion A\n")
 
+    def test_delete_incomplete_runs_including_missing_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            questions = root / "questions.txt"
+            questions.write_text("First\nSecond\nThird\n", encoding="utf-8")
+            logs = root / "logs"
+            successful_run = logs / "2026-09-24_10-00-00_aaaaaa"
+            failed_run = logs / "2026-09-24_10-01-00_bbbbbb"
+            missing_run = logs / "2026-09-24_10-02-00_cccccc"
+            successful_result = successful_run / "q001" / "result.json"
+            failed_result = failed_run / "q002" / "result.json"
+            successful_result.parent.mkdir(parents=True)
+            failed_result.parent.mkdir(parents=True)
+            (missing_run / "q003" / "turns").mkdir(parents=True)
+            successful_result.write_text(
+                json.dumps({"final_error": None, "final_answer": "Done"}),
+                encoding="utf-8",
+            )
+            failed_result.write_text(
+                json.dumps(
+                    {"final_error": {"type": "Error"}, "final_answer": ""}
+                ),
+                encoding="utf-8",
+            )
+
+            summary = prepare_remaining(
+                questions,
+                [logs],
+                root / "remaining.txt",
+                delete_incomplete_runs=True,
+            )
+
+            self.assertEqual(summary["remaining_ids"], ["q002", "q003"])
+            self.assertEqual(summary["missing_results"], 1)
+            self.assertTrue(successful_run.exists())
+            self.assertFalse(failed_run.exists())
+            self.assertFalse(missing_run.exists())
+            self.assertEqual(
+                summary["deleted_run_dirs"],
+                [str(failed_run), str(missing_run)],
+            )
+
+    def test_delete_incomplete_runs_keeps_mixed_run_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            questions = root / "questions.txt"
+            questions.write_text("First\nSecond\n", encoding="utf-8")
+            run = root / "logs" / "2026-09-24_10-00-00_aaaaaa"
+            records = {
+                "q001/result.json": {"final_error": None, "final_answer": "Done"},
+                "q002/result.json": {
+                    "final_error": {"type": "Error"},
+                    "final_answer": "",
+                },
+            }
+            for name, payload in records.items():
+                path = run / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            summary = prepare_remaining(
+                questions,
+                [root / "logs"],
+                root / "remaining.txt",
+                delete_incomplete_runs=True,
+            )
+
+            self.assertTrue(run.exists())
+            self.assertEqual(summary["deleted_run_dirs"], [])
+            self.assertEqual(summary["skipped_deletion_dirs"], [str(run)])
+
     def test_original_question_file_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -134,6 +134,12 @@ python -m finance_agent.prepare_remaining \
 finance-agent --question-file data/remaining.txt --model glm-5.3
 ```
 
+Add `--delete-incomplete-runs` to permanently remove each unfinished question's
+timestamped run directory after writing the retry file. Missing `result.json`,
+invalid JSON, a non-null `final_error`, or an empty `final_answer` all count as
+unfinished. A timestamped directory containing any completed or unknown question
+is retained rather than partially or unsafely deleted.
+
 The retry TXT contains `qNNN<TAB>question` records. The runner automatically
 recognizes this format and logs the original IDs (`q116` stays `q116`, not
 `q001`), while ordinary one-question-per-line files keep sequential numbering.
