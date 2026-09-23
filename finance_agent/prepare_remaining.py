@@ -44,20 +44,20 @@ def _question_directories(root: Path) -> list[Path]:
 
 def _delete_safe_incomplete_run_dirs(
     question_status: dict[Path, bool],
-    remaining_ids: set[str],
 ) -> tuple[list[str], list[str]]:
-    """Delete timestamped run dirs only when every contained question is unfinished."""
+    """Delete timestamped run dirs only when every contained attempt is unfinished."""
     candidate_runs = {
         question_dir.parent
         for question_dir, is_completed in question_status.items()
         if not is_completed
-        and question_dir.name in remaining_ids
-        and RUN_DIRECTORY_PATTERN.fullmatch(question_dir.parent.name)
     }
     deleted = []
     skipped = []
     for run_dir in sorted(candidate_runs):
-        if run_dir.is_symlink():
+        if (
+            run_dir.is_symlink()
+            or not RUN_DIRECTORY_PATTERN.fullmatch(run_dir.name)
+        ):
             skipped.append(str(run_dir))
             continue
         direct_question_dirs = [
@@ -66,8 +66,7 @@ def _delete_safe_incomplete_run_dirs(
             if child.is_dir() and QUESTION_ID_PATTERN.fullmatch(child.name)
         ]
         safe_to_delete = bool(direct_question_dirs) and all(
-            child.name in remaining_ids
-            and question_status.get(child) is False
+            question_status.get(child) is False
             and not child.is_symlink()
             for child in direct_question_dirs
         )
@@ -138,7 +137,6 @@ def prepare_remaining(
     if delete_incomplete_runs:
         deleted_run_dirs, skipped_deletion_dirs = _delete_safe_incomplete_run_dirs(
             question_status,
-            {qid for qid, _ in remaining},
         )
     return {
         "total": len(questions),
@@ -150,6 +148,7 @@ def prepare_remaining(
         "unknown_question_ids": sorted(unknown_ids),
         "deleted_run_dirs": deleted_run_dirs,
         "skipped_deletion_dirs": skipped_deletion_dirs,
+        "delete_incomplete_runs": delete_incomplete_runs,
         "output_file": str(output_file),
     }
 
@@ -197,8 +196,16 @@ def main_sync() -> None:
         print(
             f"Warning: unknown question IDs were ignored: {summary['unknown_question_ids']}"
         )
-    if summary["deleted_run_dirs"]:
-        print(f"Deleted incomplete run directories: {summary['deleted_run_dirs']}")
+    if summary["delete_incomplete_runs"]:
+        print(
+            "Deleted incomplete run directories "
+            f"({len(summary['deleted_run_dirs'])}): {summary['deleted_run_dirs']}"
+        )
+    else:
+        print(
+            "Incomplete run deletion is disabled; pass --delete-incomplete-runs "
+            "to enable it."
+        )
     if summary["skipped_deletion_dirs"]:
         print(
             "Warning: unsafe or mixed run directories were not deleted: "

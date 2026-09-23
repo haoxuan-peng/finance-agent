@@ -177,6 +177,39 @@ class QuestionFileTests(unittest.TestCase):
             self.assertEqual(summary["deleted_run_dirs"], [])
             self.assertEqual(summary["skipped_deletion_dirs"], [str(run)])
 
+    def test_delete_failed_attempt_even_if_same_question_succeeded_elsewhere(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            questions = root / "questions.txt"
+            questions.write_text("First\n", encoding="utf-8")
+            failed_run = root / "logs" / "2026-09-24_10-00-00_aaaaaa"
+            successful_run = root / "logs" / "2026-09-24_10-01-00_bbbbbb"
+            records = {
+                failed_run / "q001" / "result.json": {
+                    "final_error": {"type": "Error"},
+                    "final_answer": "",
+                },
+                successful_run / "q001" / "result.json": {
+                    "final_error": None,
+                    "final_answer": "Done",
+                },
+            }
+            for path, payload in records.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            summary = prepare_remaining(
+                questions,
+                [root / "logs"],
+                root / "remaining.txt",
+                delete_incomplete_runs=True,
+            )
+
+            self.assertEqual(summary["remaining_ids"], [])
+            self.assertFalse(failed_run.exists())
+            self.assertTrue(successful_run.exists())
+            self.assertEqual(summary["deleted_run_dirs"], [str(failed_run)])
+
     def test_original_question_file_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
