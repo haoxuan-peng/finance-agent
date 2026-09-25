@@ -9,6 +9,7 @@ from finance_agent.evaluate_rollouts import (
     _aggregate,
     _extract_json_object,
     _normalize_rubrics,
+    _summarize_result,
     _validate_judgement,
     discover_results,
     load_dataset,
@@ -58,6 +59,9 @@ class EvaluateRolloutsTests(unittest.TestCase):
             [rubric["points"] for rubric in dataset["q001"]["rubrics"]],
             [2.0, 0.5],
         )
+        self.assertTrue(
+            all("must_have" not in rubric for rubric in dataset["q001"]["rubrics"])
+        )
 
     def test_score_totals_use_rubric_points(self):
         item = {
@@ -75,6 +79,48 @@ class EvaluateRolloutsTests(unittest.TestCase):
         self.assertEqual(item["score"]["possible"], 2.5)
         self.assertEqual(item["score"]["percent"], 80.0)
         self.assertEqual(item["score"]["rubrics_passed"], 1)
+
+    def test_score_totals_omit_must_have_when_dataset_has_none(self):
+        item = {
+            "judgement": {
+                "rubric_scores": [
+                    {"score": 1, "points": 2.0},
+                    {"score": 0, "points": 1.0},
+                ]
+            }
+        }
+
+        _add_score_totals(item)
+
+        self.assertNotIn("must_have_earned", item["score"])
+        self.assertNotIn("must_have_possible", item["score"])
+        self.assertNotIn("must_have_percent", item["score"])
+
+    def test_summarizes_per_tool_success_and_unknown_legacy_status(self):
+        summary = _summarize_result(
+            {
+                "final_answer": "Done",
+                "tool_calls_count": 3,
+                "tool_usage": {"web_search": 2, "parse_html_page": 1},
+                "turns": [
+                    {
+                        "tool_calls": [
+                            {"tool_name": "web_search", "success": True},
+                            {"tool_name": "web_search", "success": False},
+                        ]
+                    },
+                    {"tool_calls": ["parse_html_page"]},
+                ],
+            }
+        )
+
+        self.assertTrue(summary["answer_submitted"])
+        self.assertEqual(
+            summary["tool_usage"], {"parse_html_page": 1, "web_search": 2}
+        )
+        self.assertEqual(summary["tool_successes"]["web_search"], 1)
+        self.assertEqual(summary["tool_status_known"]["web_search"], 2)
+        self.assertEqual(summary["tool_status_known"]["parse_html_page"], 0)
 
     def test_discovers_latest_duplicate_and_ignores_turn_results(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -133,18 +179,16 @@ class EvaluateRolloutsTests(unittest.TestCase):
         self.assertEqual([item["score"] for item in judgement["rubric_scores"]], [1, 0])
 
     def test_aggregate_includes_completion_turns_tools_and_score_buckets(self):
-        def item(percent, success, turns, tool_usage):
+        def item(percent, success, turns, tool_usage, answer):
             return {
                 "status": "ok",
+                "final_answer": "Answer" if answer else "",
                 "score": {
                     "earned": percent,
                     "possible": 100,
                     "percent": percent,
                     "rubrics_passed": 1,
                     "rubrics_total": 1,
-                    "must_have_earned": 0,
-                    "must_have_possible": 0,
-                    "must_have_percent": 0,
                 },
                 "trajectory": {
                     "success": success,
@@ -154,10 +198,10 @@ class EvaluateRolloutsTests(unittest.TestCase):
             }
 
         items = [
-            item(0, True, 10, {"web_search": 2}),
-            item(10, False, 20, {"parse_html_page": 4}),
-            item(99.9, True, 30, {"web_search": 1}),
-            item(100, False, 40, {}),
+            item(0, True, 10, {"web_search": 2}, True),
+            item(10, False, 20, {"parse_html_page": 4}, False),
+            item(99.9, True, 30, {"web_search": 1}, True),
+            item(100, False, 40, {}, False),
         ]
         items.append(
             {
@@ -173,12 +217,17 @@ class EvaluateRolloutsTests(unittest.TestCase):
         self.assertEqual(summary["agent_completion_rate_percent"], 40)
         self.assertEqual(summary["trajectory_count"], 5)
         self.assertEqual(summary["average_turns"], 30)
+        self.assertEqual(summary["answered_questions"], 2)
+        self.assertAlmostEqual(summary["answered_macro_score_percent"], 49.95)
         self.assertEqual(
             summary["tool_call_totals"], {"parse_html_page": 4.0, "web_search": 3.0}
         )
         self.assertEqual(
             summary["average_tool_calls"], {"parse_html_page": 0.8, "web_search": 0.6}
         )
+        self.assertEqual(summary["tool_statistics"]["web_search"]["successful"], 0)
+        self.assertEqual(summary["tool_statistics"]["web_search"]["unknown"], 3)
+        self.assertNotIn("must_have_percent", summary)
         self.assertEqual(summary["score_distribution"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 2])
 
     def test_renders_self_contained_report(self):
@@ -204,6 +253,8 @@ class EvaluateRolloutsTests(unittest.TestCase):
                 "total_turns": 2,
                 "tool_calls_count": 1,
                 "tool_usage": {"web_search": 1},
+                "tool_successes": {"web_search": 1},
+                "tool_status_known": {"web_search": 1},
                 "input_tokens": 100,
                 "output_tokens": 20,
             },
@@ -238,6 +289,60 @@ class EvaluateRolloutsTests(unittest.TestCase):
         self.assertIn("1/1 (100.0%)", report)
         self.assertIn("average turns", report)
         self.assertIn("web_search", report)
+        self.assertIn("Tool execution statistics", report)
+        self.assertIn("Successful", report)
+        self.assertIn('id="score-filter"', report)
+        self.assertIn("data-score-option", report)
+
+    def test_report_omits_must_have_ui_when_no_must_have_rubrics(self):
+        item = {
+            "status": "ok",
+            "model": "model-a",
+            "question_id": "q001",
+            "question": "Question?",
+            "final_answer": "Answer.",
+            "score": {
+                "earned": 1,
+                "possible": 1,
+                "percent": 100,
+                "rubrics_passed": 1,
+                "rubrics_total": 1,
+            },
+            "trajectory": {
+                "success": True,
+                "stop_reason": "done_tool",
+                "total_turns": 1,
+                "tool_calls_count": 0,
+                "tool_usage": {},
+                "tool_successes": {},
+                "tool_status_known": {},
+                "input_tokens": 10,
+                "output_tokens": 5,
+            },
+            "judgement": {
+                "rubric_scores": [
+                    {
+                        "rubric_id": "1",
+                        "rubric_text": "Criterion",
+                        "points": 1.0,
+                        "score": 1,
+                        "explanation": "Present",
+                        "evidence": "Answer",
+                    }
+                ]
+            },
+        }
+        payload = {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "judge_model": "judge",
+            "items": [item],
+            "summary": _aggregate([item]),
+        }
+
+        report = render_html_report(payload)
+
+        self.assertNotIn("must-have score", report)
+        self.assertNotIn("<th>Must-have</th>", report)
 
 
 if __name__ == "__main__":
