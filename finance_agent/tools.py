@@ -1,3 +1,4 @@
+import codecs
 import json
 import logging
 import re
@@ -15,6 +16,108 @@ from .exceptions import retry_http_errors
 from .key_rotator import KeyRotator, NoAvailableAPIKeysError, get_rotator
 
 VALID_TOOLS = ["web_search", "retrieve_information", "parse_html_page", "edgar_search"]
+
+_HTML_ENCODING_RE = re.compile(
+    rb"""(?ix)
+    (?:
+        <meta\b[^>]*?\bcharset\s*=\s*["']?\s*([a-z0-9._:+-]+)
+        |
+        <\?xml\b[^>]*?\bencoding\s*=\s*["']\s*([a-z0-9._:+-]+)
+    )
+    """
+)
+_BINARY_CONTENT_TYPE_PREFIXES = ("audio/", "font/", "image/", "video/")
+_BINARY_CONTENT_TYPES = {
+    "application/gzip",
+    "application/pdf",
+    "application/vnd.rar",
+    "application/x-7z-compressed",
+    "application/x-gzip",
+    "application/x-rar-compressed",
+    "application/zip",
+}
+_BINARY_SIGNATURES = (
+    b"%PDF-",
+    b"GIF87a",
+    b"GIF89a",
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",
+    b"PK\x03\x04",
+    b"\x1f\x8b",
+)
+
+
+def _declared_markup_encoding(content: bytes) -> str | None:
+    """Return an encoding declared near the start of HTML or XML content."""
+    match = _HTML_ENCODING_RE.search(content[:8192])
+    if match is None:
+        return None
+    raw_encoding = next((group for group in match.groups() if group), None)
+    if raw_encoding is None:
+        return None
+    return raw_encoding.decode("ascii", errors="ignore") or None
+
+
+def _decode_html_bytes(content: bytes, declared_encoding: str | None) -> str:
+    """Decode markup without assuming that every server returns valid UTF-8."""
+    candidates: list[str] = []
+
+    # Check UTF-32 before UTF-16 because their little-endian BOMs share a prefix.
+    if content.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        candidates.append("utf-32")
+    elif content.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        candidates.append("utf-16")
+    elif content.startswith(codecs.BOM_UTF8):
+        candidates.append("utf-8-sig")
+
+    if declared_encoding:
+        candidates.append(declared_encoding)
+    markup_encoding = _declared_markup_encoding(content)
+    if markup_encoding:
+        candidates.append(markup_encoding)
+    candidates.extend(("utf-8", "windows-1252", "latin-1"))
+
+    tried: set[str] = set()
+    for encoding in candidates:
+        normalized = encoding.casefold()
+        if normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            return content.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+
+    # latin-1 accepts every byte, so this is defensive rather than reachable.
+    return content.decode("utf-8", errors="replace")
+
+
+def _html_bytes_to_text(
+    content: bytes,
+    *,
+    declared_encoding: str | None,
+    content_type: str | None,
+) -> str:
+    """Decode an HTML-like response and extract readable plain text."""
+    media_type = (content_type or "").partition(";")[0].strip().casefold()
+    if media_type.startswith(_BINARY_CONTENT_TYPE_PREFIXES) or media_type in (
+        _BINARY_CONTENT_TYPES
+    ):
+        raise ValueError(
+            f"URL returned unsupported binary content type: {media_type}"
+        )
+    if any(content.startswith(signature) for signature in _BINARY_SIGNATURES):
+        raise ValueError("URL returned binary content instead of an HTML page")
+
+    html_content = _decode_html_bytes(content, declared_encoding)
+    soup = BeautifulSoup(html_content, "html.parser")
+    for script_or_style in soup(["script", "style"]):
+        _ = script_or_style.extract()
+
+    text = soup.get_text()
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    return "\n".join(chunk for chunk in chunks if chunk)
 
 
 class SubmitFinalResult(Tool):
@@ -355,7 +458,9 @@ class ParseHtmlPage(Tool):
                     headers={"User-Agent": "ValsAI/antoine@vals.ai"},
                 ) as response:
                     response.raise_for_status()
-                    html_content = await response.text()
+                    content = await response.read()
+                    declared_encoding = response.charset
+                    content_type = response.headers.get("Content-Type")
             except Exception as e:
                 if len(str(e)) == 0:
                     raise TimeoutError(
@@ -363,16 +468,11 @@ class ParseHtmlPage(Tool):
                     )
                 raise
 
-        soup = BeautifulSoup(html_content, "html.parser")
-        for script_or_style in soup(["script", "style"]):
-            _ = script_or_style.extract()
-
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = "\n".join(chunk for chunk in chunks if chunk)
-
-        return text
+        return _html_bytes_to_text(
+            content,
+            declared_encoding=declared_encoding,
+            content_type=content_type,
+        )
 
     async def _save_tool_output(
         self, output: str, key: str, state: dict[str, Any]

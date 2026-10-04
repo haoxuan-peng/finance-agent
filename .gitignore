@@ -8,5 +8,6 @@ __pycache__/
 .DS_STORE
 /tests/*
 !/tests/test_question_files.py
+!/tests/test_tools.py
 /ruff_cache
 keys.txt
