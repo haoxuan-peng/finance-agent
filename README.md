@@ -179,10 +179,14 @@ python -m finance_agent.evaluate_rollouts \
 ```
 
 CSV question sets are also accepted directly. The evaluator recognizes
-`Question`, `Answer`, `Question Type`, and `Rubric` columns; `Rubric` must be a
-JSON array such as `[{"criteria": "States the correct CFO", "points": 2}]`.
-The optional reference answer is provided to the judge as ground-truth context,
-and rubric `points` are used as scoring weights:
+`Question`, `Answer`, `Question Type`, and `Rubric` columns. `Rubric` may be a
+JSON array such as `[{"criteria": "States the correct CFO", "points": 2}]`, or
+a whole-question object whose `criteria` field contains entries with `id`,
+`criterion`, and `points`. For the object form, `tolerance`, `grading_rule`,
+`contradiction_check`, and `contradiction_rule` are sent to the judge as
+unscored question-level guidance, and the criteria total is validated against
+`max_score`. The optional reference answer is provided to the judge as
+ground-truth context, and rubric `points` are used as scoring weights:
 
 ```bash
 python -m finance_agent.evaluate_rollouts \

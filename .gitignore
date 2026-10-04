@@ -9,5 +9,6 @@ __pycache__/
 /tests/*
 !/tests/test_question_files.py
 !/tests/test_tools.py
+!/tests/test_evaluate_seed_schema.py
 /ruff_cache
 keys.txt
