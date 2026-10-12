@@ -15,6 +15,7 @@ from tavily.errors import InvalidAPIKeyError, UsageLimitExceededError
 from .exceptions import retry_http_errors
 from .key_rotator import KeyRotator, NoAvailableAPIKeysError, get_rotator
 
+MAX_END_DATE = "2025-04-07"
 VALID_TOOLS = ["web_search", "retrieve_information", "parse_html_page", "edgar_search"]
 
 _HTML_ENCODING_RE = re.compile(
@@ -164,7 +165,8 @@ class TavilyWebSearch(Tool):
         },
         "end_date": {
             "type": "string",
-            "description": "(optional) The end date for the search range in the format YYYY-MM-DD.",
+            "description": f"(optional) The end date for the search range in the format YYYY-MM-DD. Defaults to {MAX_END_DATE}; later dates will be set to {MAX_END_DATE}.",
+            "default": MAX_END_DATE,
         },
         "number_of_results": {
             "type": "integer",
@@ -224,33 +226,36 @@ class TavilyWebSearch(Tool):
         self,
         search_query: str,
         start_date: str | None = None,
-        end_date: str | None = None,
+        end_date: str | None = MAX_END_DATE,
         number_of_results: int = 10,
     ) -> list[dict[str, Any]]:
         DATE_REGEX = r"^\d{4}-\d{2}-\d{2}$"
 
         kwargs = {}
+        end_date = end_date or MAX_END_DATE
 
-        if end_date:
-            if not re.match(DATE_REGEX, end_date):
-                raise ValueError(
-                    f"Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD."
-                )
+        if not re.match(DATE_REGEX, end_date):
+            raise ValueError(
+                f"Invalid end_date format: '{end_date}'. Expected YYYY-MM-DD."
+            )
+        if end_date > MAX_END_DATE:
+            end_date = MAX_END_DATE
 
         if start_date:
             if not re.match(DATE_REGEX, start_date):
                 raise ValueError(
                     f"Invalid start_date format: '{start_date}'. Expected YYYY-MM-DD."
                 )
-            if end_date and start_date > end_date:
+            if start_date > MAX_END_DATE:
+                start_date = MAX_END_DATE
+            if start_date > end_date:
                 raise ValueError(
                     f"Parameter start_date '{start_date}' was set to a date that is later than end_date '{end_date}'"
                 )
 
             kwargs["start_date"] = start_date
 
-        if end_date:
-            kwargs["end_date"] = end_date
+        kwargs["end_date"] = end_date
 
         last_key_error: Exception | None = None
         while self._key_rotator.active_key_count:
@@ -317,12 +322,13 @@ class EDGARSearch(Tool):
         },
         "start_date": {
             "type": "string",
-            "description": "(optional) Start date for the search range in yyyy-mm-dd format.",
+            "description": f"(optional) Start date for the search range in yyyy-mm-dd format. Dates later than {MAX_END_DATE} will be set to {MAX_END_DATE}.",
             "default": "1900-01-01",
         },
         "end_date": {
             "type": "string",
-            "description": "(optional) End date for the search range in yyyy-mm-dd format.",
+            "description": f"(optional) End date for the search range in yyyy-mm-dd format. Defaults to {MAX_END_DATE}; later dates will be set to {MAX_END_DATE}.",
+            "default": MAX_END_DATE,
         },
         "page": {
             "type": "integer",
@@ -356,7 +362,7 @@ class EDGARSearch(Tool):
         self,
         search_query: str,
         start_date: str = "1900-01-01",
-        end_date: str | None = None,
+        end_date: str | None = MAX_END_DATE,
         top_n_results: int = 100,
         page: int = 1,
         form_types: list[str] | str | None = None,
@@ -372,14 +378,20 @@ class EDGARSearch(Tool):
                 f"The parameter ciks must be a list if provided. Was of type {type(ciks)}"
             )
 
+        end_date = end_date or MAX_END_DATE
         date_pattern = r"^\d{4}-\d{2}-\d{2}$"
         if not re.match(date_pattern, start_date):
             raise ValueError(f"start_date '{start_date}' is not in yyyy-mm-dd format")
 
-        if end_date is not None and not re.match(date_pattern, end_date):
+        if not re.match(date_pattern, end_date):
             raise ValueError(f"end_date '{end_date}' is not in yyyy-mm-dd format")
 
-        if end_date is not None and start_date > end_date:
+        if start_date > MAX_END_DATE:
+            start_date = MAX_END_DATE
+        if end_date > MAX_END_DATE:
+            end_date = MAX_END_DATE
+
+        if start_date > end_date:
             raise ValueError(
                 f"Parameter start_date '{start_date}' was set to a date that is later than end_date '{end_date}'"
             )
@@ -387,10 +399,8 @@ class EDGARSearch(Tool):
         payload: dict[str, str | int | list[str]] = {
             "query": search_query,
             "startDate": start_date,
+            "endDate": end_date,
         }
-
-        if end_date:
-            payload["endDate"] = end_date
 
         if page:
             payload["page"] = page
