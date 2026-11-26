@@ -16,6 +16,21 @@ from .question_files import load_question_file, validate_question_ids
 from .tools import VALID_TOOLS
 
 
+def _parse_extra_body(value: str) -> dict[str, Any]:
+    def reject_constant(constant: str):
+        raise ValueError(f"{constant} is not valid JSON")
+
+    try:
+        body = json.loads(value, parse_constant=reject_constant)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"must be a valid JSON object: {error}"
+        ) from error
+    if not isinstance(body, dict):
+        raise argparse.ArgumentTypeError("must be a JSON object")
+    return body
+
+
 async def run_tests_parallel(
     questions: list[str],
     max_concurrent: int,
@@ -37,18 +52,33 @@ async def run_tests_parallel(
             result = await agent.run([TextInput(text=prompt)], question_id=question_id)
             return result
 
-    tasks = [process_question(question, qid) for question, qid in zip(questions, question_ids)]
+    tasks = [
+        process_question(question, qid)
+        for question, qid in zip(questions, question_ids)
+    ]
 
     results: list[AgentResult] = await tqdm.gather(*tasks, desc="Processing questions")
 
     formatted_results = []
     for question, qid, result in zip(questions, question_ids, results):
         if isinstance(result, Exception):
-            formatted_results.append({"question_id": qid, "question": question, "success": False, "error": str(result)})
+            formatted_results.append(
+                {
+                    "question_id": qid,
+                    "question": question,
+                    "success": False,
+                    "error": str(result),
+                }
+            )
             print(f"\nFAIL Question failed: {question}\n   Error: {result}\n")
         else:
             formatted_results.append(
-                {"question_id": qid, "question": question, "success": result.success, "result": result.model_dump(mode="json")}
+                {
+                    "question_id": qid,
+                    "question": question,
+                    "success": result.success,
+                    "result": result.model_dump(mode="json"),
+                }
             )
             if not result.success and result.final_error:
                 print(
@@ -72,7 +102,9 @@ async def run_tests_parallel(
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Run the harness for the finance agent benchmark")
+    parser = argparse.ArgumentParser(
+        description="Run the harness for the finance agent benchmark"
+    )
     parser.add_argument(
         "--max-tokens",
         type=int,
@@ -85,15 +117,24 @@ async def main():
         default=0.0,
         help="Temperature for model generation",
     )
-    parser.add_argument("--questions", type=str, nargs="+", help="List of questions to process")
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        help="Reasoning effort sent verbatim to the API; supported values depend on the model server",
+    )
+    parser.add_argument(
+        "--extra-body",
+        type=_parse_extra_body,
+        help="JSON object of service-specific request fields; overrides generated body fields",
+    )
+    parser.add_argument(
+        "--questions", type=str, nargs="+", help="List of questions to process"
+    )
     parser.add_argument(
         "--model",
         type=str,
         default="anthropic/claude-sonnet-4-5-20250929",
-        help=(
-            "Model to use. Bare names (for example glm-5.2) use the custom "
-            "OpenAI-compatible proxy; provider-qualified names use model-library."
-        ),
+        help="Model ID sent verbatim to the shared AGENT_BASE_URL OpenAI-compatible endpoint",
     )
     parser.add_argument(
         "--question-file",
@@ -157,7 +198,9 @@ async def main():
         questions = args.questions
         question_ids = None
     else:
-        raise Exception("No questions provided. One of --question-file or --questions must be used.")
+        raise Exception(
+            "No questions provided. One of --question-file or --questions must be used."
+        )
 
     parameters = Parameters(
         model_name=args.model,
@@ -167,7 +210,9 @@ async def main():
         llm_config=LLMConfig(
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            reasoning_effort=args.reasoning_effort,
         ),
+        extra_body=args.extra_body or {},
     )
 
     await run_tests_parallel(

@@ -35,23 +35,13 @@ Create a `.env` file in the root of the project and add the following:
 ```
 VALS_API_KEY=<api_key>
 
-# LLM API Keys (only set the ones you plan on using)
-OPENAI_API_KEY=<openai_api_key>
-ANTHROPIC_API_KEY=<anthropic_api_key>
-GOOGLE_API_KEY=<google_api_key>
-ETC_API_KEY=<etc_api_key>
-
 # Tool API Keys
 TAVILY_API_KEY=<tavily_api_key>  # supports semicolon-separated failover keys, e.g. key1;key2;key3
 SEC_EDGAR_API_KEY=<sec_api_key>  # supports semicolon-separated keys for round-robin rotation, e.g. key1;key2;key3
 
-# OpenAI-compatible model proxy (used when --model is a bare model name)
+# One OpenAI-compatible endpoint for all agent models
 AGENT_BASE_URL=https://your-proxy.example.com/v1
 AGENT_API_KEY=<proxy_api_key>
-
-# Optional Qwen-family endpoint. Qwen model names prefer these over AGENT_*.
-QWEN3_API_URL=https://your-qwen-server.example.com/v1
-QWEN3_API_KEY=<qwen_api_key>
 ```
 
 You can create a Tavily API key [here](https://tavily.com/), and an SEC API key [here](https://sec-api.io/).
@@ -67,32 +57,16 @@ key state.
 
 The `.env` takes precedence over set environment variables.
 
-When `--model` is a bare model name such as `glm-5.2`, the agent sends model
-requests to `AGENT_BASE_URL` using `AGENT_API_KEY` and the OpenAI-compatible
-Chat Completions protocol. `AGENT_URL` and `AGENT_KEY` are accepted as aliases.
+All agent models use `AGENT_BASE_URL` and `AGENT_API_KEY` with the
+OpenAI-compatible Chat Completions protocol. Set this single endpoint to your
+gateway or vLLM server, then select the model with `--model`. The model name is
+sent to the API exactly as supplied, including names containing `/` such as
+`openai/gpt-5.2-2025-12-11` or `Qwen/Qwen3.5-9B`. Your gateway can route these
+names to different backends. `AGENT_URL` and `AGENT_KEY` remain accepted aliases.
 The base URL may be either an API base such as `https://host/v1` or a full
-`https://host/v1/chat/completions` URL. Provider-qualified names such as
-`openai/gpt-5.2-2025-12-11` continue to use the model-library registry.
-
-Bare Qwen model names such as `qwen3.5-9b` and `qwen3.6-35b-a3b` first use
-`QWEN3_API_URL` and `QWEN3_API_KEY`, falling back to the general `AGENT_*`
-configuration. To route the two models to different servers, use model-specific
-variables (non-alphanumeric model-name characters become underscores):
-
-```
-MODEL_QWEN3_5_9B_BASE_URL=https://qwen-9b.example.com/v1
-MODEL_QWEN3_5_9B_API_KEY=<qwen_9b_api_key>
-MODEL_QWEN3_5_9B_MODEL_ID=<model-id-returned-by-v1-models>
-
-MODEL_QWEN3_6_35B_A3B_BASE_URL=https://qwen-35b.example.com/v1
-MODEL_QWEN3_6_35B_A3B_API_KEY=<qwen_35b_api_key>
-MODEL_QWEN3_6_35B_A3B_MODEL_ID=<model-id-returned-by-v1-models>
-```
-
-The precedence is model-specific variables, then Qwen-family variables, then
-the general `AGENT_*` variables. The optional model-specific `MODEL_ID` changes
-only the model identifier sent to the API, allowing a short CLI model name to
-target a server that advertises a filesystem path or another deployment ID.
+`https://host/v1/chat/completions` URL. Model-specific `MODEL_*` and Qwen-family
+`QWEN3_*` connection variables are no longer used. For a self-hosted deployment,
+pass the served model ID directly to `--model`.
 
 For example:
 
@@ -123,6 +97,47 @@ You can also specify a list of questions in a text file, one question per line:
 ```
 finance-agent --question-file data/public.txt
 ```
+
+### Thinking controls and service-specific parameters
+
+The agent accepts two optional request parameters:
+
+| Parameter | Purpose |
+| --- | --- |
+| `--reasoning-effort high` | Send `reasoning_effort` to an endpoint that supports it. Allowed values are determined by the model service. |
+| `--extra-body '{"key":"value"}'` | Pass a JSON object with service-specific request fields, including thinking switches and budgets. |
+
+For a relay that supports `reasoning_effort`:
+
+```bash
+finance-agent \
+  --model my-model \
+  --question-file data/public.txt \
+  --reasoning-effort high
+```
+
+For a vLLM Qwen deployment that supports `enable_thinking`, explicitly enable
+thinking through its chat template:
+
+```bash
+finance-agent \
+  --model qwen3.5-9b \
+  --question-file data/public.txt \
+  --extra-body '{"chat_template_kwargs":{"enable_thinking":true}}'
+```
+
+To disable thinking, use
+`--extra-body '{"chat_template_kwargs":{"enable_thinking":false}}'`.
+If the service supports an independent thinking budget, pass its corresponding
+field through `--extra-body`; the field and behavior depend on the deployment
+version. See the [vLLM reasoning documentation](https://docs.vllm.ai/en/latest/features/reasoning_outputs/).
+
+`--extra-body` must be a JSON object. Its fields are merged into the top level
+of each model request and override generated fields with the same name,
+including `reasoning_effort`; no nested `extra_body` field is sent. Both options
+can be used together. When omitted, the agent leaves these controls to the
+service defaults. `--max-tokens` remains the completion token limit and does
+not select a reasoning effort level.
 
 To retry unfinished questions **without changing their original question IDs**:
 
@@ -305,7 +320,9 @@ The default configuration is the one we used to run the benchmark.
 
 ### List of Models
 
-A list of available models can be found at our [model library](https://github.com/vals-ai/model-library/blob/main/model_library/config/all_models.json), and also by running `make browse-models` in the model library repository.
+Use a model ID exposed by your configured `AGENT_BASE_URL` endpoint, typically
+listed by its `/models` API. The harness sends the value of `--model` unchanged
+and does not look it up in the model-library registry.
 
 To run your own harness or model, just modify the `get_custom_model` function as needed. To see the full documentation on how the SDK works, visit [our docs](https://docs.vals.ai/sdk/running_suites).
 

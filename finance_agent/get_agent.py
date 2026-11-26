@@ -1,3 +1,5 @@
+from typing import Any
+
 from model_library.agent import (
     Agent,
     AgentConfig,
@@ -11,7 +13,7 @@ from model_library.agent import (
 from model_library.base import LLM, LLMConfig, RawResponse, TextInput
 from model_library.base.input import InputItem
 from model_library.exceptions import MaxContextWindowExceededError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .model_factory import get_model
 from .tools import (
@@ -31,6 +33,7 @@ class Parameters(BaseModel):
     max_time: float | None = None
     tools: list[str] = VALID_TOOLS
     llm_config: LLMConfig
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
 def get_agent(
@@ -39,7 +42,11 @@ def get_agent(
 ) -> Agent:
     """Helper method to instantiate an agent with the given parameters"""
     if llm is None:
-        llm = get_model(parameters.model_name, parameters.llm_config)
+        llm = get_model(
+            parameters.model_name,
+            parameters.llm_config,
+            extra_body=parameters.extra_body,
+        )
 
     available_tools: dict[str, type[Tool]] = {
         "web_search": TavilyWebSearch,
@@ -51,7 +58,9 @@ def get_agent(
     selected_tools: list[Tool] = []
     for tool_name in parameters.tools:
         if tool_name not in available_tools:
-            raise Exception(f"Tool {tool_name} not found in tools. Available tools: {available_tools.keys()}")
+            raise Exception(
+                f"Tool {tool_name} not found in tools. Available tools: {available_tools.keys()}"
+            )
         tool_cls = available_tools[tool_name]
         if tool_name == "retrieve_information":
             selected_tools.append(tool_cls(llm=llm))  # type: ignore[call-arg]
@@ -77,7 +86,9 @@ def get_agent(
     #   _should_stop=False means the only clean exit (no final_error) is the done tool break,
     #   and default_determine_answer finds the done record before reaching the text fallback.
 
-    def _before_query(history: list[InputItem], last_error: Exception | None) -> list[InputItem]:
+    def _before_query(
+        history: list[InputItem], last_error: Exception | None
+    ) -> list[InputItem]:
         """Truncate on context window overflow, re-raise all other errors (stops the loop).
 
         Also injects "Continue." when the previous turn had no tool calls
